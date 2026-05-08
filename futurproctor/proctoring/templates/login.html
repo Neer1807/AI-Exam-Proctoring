@@ -150,7 +150,8 @@
         .then(data => {
           if (data.success) {
             const pct = (data.match_percentage ?? 0).toFixed(2);
-            alert('Welcome, ' + data.student_name + '. Face match: ' + pct + '%');
+            const mode = data.face_check_skipped ? ' (face check fallback mode)' : '';
+            alert('Welcome, ' + data.student_name + '. Face match: ' + pct + '%' + mode);
             window.location.href = data.redirect_url;
           } else {
             errorMessage.textContent = data.error;

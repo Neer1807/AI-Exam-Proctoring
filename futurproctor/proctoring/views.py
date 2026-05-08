@@ -75,7 +75,35 @@ def get_nepal_time():
     return datetime.now(NEPAL_TZ)
 
 
-FACE_MATCH_THRESHOLD = float(os.getenv("FACE_MATCH_THRESHOLD", "1.15"))
+FACE_MATCH_THRESHOLD = float(os.getenv("FACE_MATCH_THRESHOLD", "2.2"))
+
+
+def get_student_photo_embedding(student):
+    """Extract embedding from saved student photo (works with Cloudinary storage too)."""
+    if not student.photo:
+        return None
+    try:
+        student.photo.open("rb")
+        photo_bytes = student.photo.read()
+    except Exception:
+        return None
+    finally:
+        try:
+            student.photo.close()
+        except Exception:
+            pass
+
+    if not photo_bytes:
+        return None
+
+    nparr = np.frombuffer(photo_bytes, np.uint8)
+    image = cv2.imdecode(nparr, cv2.IMREAD_COLOR)
+    if image is None:
+        return None
+    try:
+        return get_face_encoding(image)
+    except FaceEmbeddingError:
+        return None
 
 
 def get_questions_file_path():
@@ -257,14 +285,47 @@ def login(request):
                 if captured_encoding is None:
                     return JsonResponse({"success": False, "error": "No face detected in the captured photo."})
 
-                stored_encoding = np.array(student.face_encoding)
+                stored_encoding = np.array(student.face_encoding) if student.face_encoding else None
 
                 # Compare the captured face encoding with the stored encoding
-                match_result = compare_face_embeddings(
-                    captured_encoding,
-                    stored_encoding,
-                    threshold=FACE_MATCH_THRESHOLD,
-                )
+                match_result = {
+                    "match": False,
+                    "distance": None,
+                    "threshold": FACE_MATCH_THRESHOLD,
+                    "match_percentage": 0.0,
+                }
+                if stored_encoding is not None:
+                    match_result = compare_face_embeddings(
+                        captured_encoding,
+                        stored_encoding,
+                        threshold=FACE_MATCH_THRESHOLD,
+                    )
+
+                # Legacy recovery: if stored encoding shape/type does not match, rebuild from profile photo.
+                if match_result["distance"] is None:
+                    rebuilt_encoding = get_student_photo_embedding(student)
+                    if rebuilt_encoding is not None:
+                        student.face_encoding = rebuilt_encoding.tolist()
+                        student.save(update_fields=["face_encoding"])
+                        match_result = compare_face_embeddings(
+                            captured_encoding,
+                            rebuilt_encoding,
+                            threshold=FACE_MATCH_THRESHOLD,
+                        )
+
+                # If no face reference can be compared, allow password-only login (soft fail-safe).
+                if match_result["distance"] is None:
+                    auth_login(request, user)
+                    request.session['student_id'] = student.id
+                    request.session['student_name'] = student.name
+                    return JsonResponse({
+                        "success": True,
+                        "redirect_url": "/dashboard/",
+                        "student_name": student.name,
+                        "match_percentage": 0.0,
+                        "face_check_skipped": True,
+                    })
+
                 if match_result["match"]:
                     # Log the user in
                     auth_login(request, user)
@@ -279,12 +340,16 @@ def login(request):
                         "redirect_url": "/dashboard/",
                         "student_name": student.name,
                         "match_percentage": match_result["match_percentage"],
+                        "distance": match_result["distance"],
+                        "threshold": match_result["threshold"],
                     })
                 else:
                     return JsonResponse({
                         "success": False,
                         "error": f"Face does not match our records. Match: {match_result['match_percentage']}%",
                         "match_percentage": match_result["match_percentage"],
+                        "distance": match_result["distance"],
+                        "threshold": match_result["threshold"],
                     })
 
             except Student.DoesNotExist:

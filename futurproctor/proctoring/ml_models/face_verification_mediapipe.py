@@ -156,7 +156,7 @@ def get_effective_threshold(embedding, threshold=None):
     emb = np.asarray(embedding, dtype=np.float32).flatten()
     if emb.shape[0] == 64 * 64:
         return 10.5
-    return 1.15
+    return 2.2
 
 
 def compare_face_embeddings(embedding_a, embedding_b, threshold=None):
