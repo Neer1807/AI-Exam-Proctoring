@@ -1,32 +1,53 @@
 import cv2
 import numpy as np
-import mediapipe as mp
 
-# Initialize MediaPipe Face Mesh
-mp_face_mesh = mp.solutions.face_mesh
-face_mesh = mp_face_mesh.FaceMesh(refine_landmarks=True)
+try:
+    import mediapipe as mp
+except Exception:  # pragma: no cover
+    mp = None
+
+
+# MediaPipe is optional at import-time; runtime will safely fall back.
+_face_mesh = None
+if mp is not None and hasattr(mp, 'solutions'):
+    _face_mesh = mp.solutions.face_mesh.FaceMesh(
+        refine_landmarks=True,
+        max_num_faces=1,
+        min_detection_confidence=0.5,
+        min_tracking_confidence=0.5,
+    )
+
+
 
 def gaze_tracking(frame):
-    """Detect gaze direction (left, right, center)."""
+    """Detect gaze direction (left, right, center).
+
+    Returns a dict: {"gaze": "left"|"right"|"center"}
+
+    If MediaPipe isn't available, defaults to center.
+    """
+    if frame is None:
+        return {"gaze": "center"}
+    if _face_mesh is None:
+        return {"gaze": "center"}
+
+
     frame_rgb = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
-    results = face_mesh.process(frame_rgb)
+    results = _face_mesh.process(frame_rgb)
 
     if results.multi_face_landmarks:
-        for landmarks in results.multi_face_landmarks:
-            # Get left and right eye landmarks
-            left_eye = [landmarks.landmark[33], landmarks.landmark[159]]  # Left eye corners
-            right_eye = [landmarks.landmark[362], landmarks.landmark[386]]  # Right eye corners
+        landmarks = results.multi_face_landmarks[0]
+        left_eye = [landmarks.landmark[33], landmarks.landmark[159]]
+        right_eye = [landmarks.landmark[362], landmarks.landmark[386]]
 
-            # Calculate horizontal gaze direction
-            left_eye_center = np.mean([(p.x, p.y) for p in left_eye], axis=0)
-            right_eye_center = np.mean([(p.x, p.y) for p in right_eye], axis=0)
+        left_eye_center_x = float(np.mean([p.x for p in left_eye]))
+        right_eye_center_x = float(np.mean([p.x for p in right_eye]))
 
-            gaze_direction = "center"
-            if left_eye_center[0] < 0.4:  # Left threshold
-                gaze_direction = "left"
-            elif right_eye_center[0] > 0.6:  # Right threshold
-                gaze_direction = "right"
-
-            return {"gaze": gaze_direction}
+        if left_eye_center_x < 0.4:
+            return {"gaze": "left"}
+        if right_eye_center_x > 0.6:
+            return {"gaze": "right"}
+        return {"gaze": "center"}
 
     return {"gaze": "center"}
+

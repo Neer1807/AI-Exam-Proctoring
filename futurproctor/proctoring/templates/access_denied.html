@@ -1,2 +1,16 @@
-<h1>Access Denied</h1>
-<p>You do not have permission to view this page.</p>
+{% extends "_base_ui.html" %}
+{% load static %}
+{% block title %}Access Denied{% endblock %}
+
+{% block content %}
+<div class="container">
+  <div class="row justify-content-center">
+    <div class="col-lg-6 col-md-8">
+      <div class="fp-card p-4 fp-glow-hover">
+        <h1 class="fp-title mb-2">Access Denied</h1>
+        <p class="fp-subtitle mb-0">You do not have permission to view this page.</p>
+      </div>
+    </div>
+  </div>
+</div>
+{% endblock %}

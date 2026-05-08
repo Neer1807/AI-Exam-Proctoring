@@ -16,17 +16,31 @@ The **AI-Based Online Exam Proctoring System** is a cutting-edge proctoring solu
 - **No Offline Mode Support**: The system explicitly notifies users that offline mode is not supported to prevent exam manipulation.
 
 ## Tech Stack
-- **Backend**: Django 5.1.5 (Python-based web framework)
+- **Backend**: Django 5.2.14 (Python-based web framework)
 - **Database**: PostgressSQL(for efficient data storage and retrieval)
 - **Frontend**: HTML, CSS, JavaScript (with UI/UX inspired by provided images)
 - **AI Models**: OpenCV, MediaPipe (for face and object detection), custom ML models
 - **Authentication**: Django authentication system with face-matching capabilities
 - **Deployment**: Hosted on a cloud platform with scalability in mind
 
+## Deployment (Cloudinary + Neon)
 
-### 📽️ Demo Video
+1. Copy `.env.example` to `.env` and fill your real credentials.
+2. Set `DATABASE_URL` from your Neon project (keep `sslmode=require`).
+3. Set `CLOUDINARY_URL` from Cloudinary dashboard.
+4. Install deps and run migrations:
+   ```bash
+   pip install -r requirements.txt
+   python manage.py migrate
+   python manage.py collectstatic --noinput
+   ```
+5. Start server:
+   ```bash
+   python manage.py runserver
+   ```
 
-Watch the demo here: [https://youtu.be/O8kfFmwkfOU](https://youtu.be/O8kfFmwkfOU)
+When `CLOUDINARY_URL` is present, media uploads (student photos, cheating images/audio) go to Cloudinary automatically.
+
 
 
 ## Installation & Setup
@@ -35,12 +49,7 @@ Watch the demo here: [https://youtu.be/O8kfFmwkfOU](https://youtu.be/O8kfFmwkfOU
 - Postgress SQL installed and running
 - 
 
-### Steps
-1. **Clone the Repository**
-   ```bash
-   https://github.com/HelpRam/An-Inbrowser-Proctoring-System.git
-   cd .\futurproctor\
-   ```
+
 
 2. **Create and Activate Virtual Environment**
    ```bash
@@ -82,7 +91,7 @@ Watch the demo here: [https://youtu.be/O8kfFmwkfOU](https://youtu.be/O8kfFmwkfOU
 - **Multi-Exam Support with Custom Rules Configuration**
 
 ## Contributors
-- **Ramdular Yadav** (Lead Developer)
+- **Nirmal Savle** (Lead Developer)
 
 
 ## License
@@ -90,6 +99,6 @@ This project is licensed under the MIT License.
 
 ## Contact
 For any inquiries or contributions, feel free to reach out to:
-- **Email**: rammey115@gmail.com
-- **Phone**: 9819936338
+- **Email**: n.savle18@gmail.com
+- **Phone**: 9302855623
 

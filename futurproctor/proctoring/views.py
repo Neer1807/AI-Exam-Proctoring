@@ -1,4 +1,6 @@
 # Django Core Imports
+
+
 from django.shortcuts import render, redirect, get_object_or_404  # Rendering templates, redirecting, and fetching objects
 from django.http import JsonResponse, StreamingHttpResponse, HttpResponse, HttpResponseRedirect  # Handling HTTP responses
 from django.contrib import messages  # Displaying success/error messages
@@ -10,9 +12,11 @@ from django.urls import reverse  # Generating dynamic URLs
 from django.views.decorators.csrf import csrf_exempt  # Disabling CSRF protection for certain views (Use cautiously)
 from django.utils.timezone import now  # Getting timezone-aware current time
 from django.core.files.base import ContentFile  # Handling in-memory file storage
+from django.conf import settings
 import cv2
 import io
 from PIL import Image
+from pathlib import Path
 
 # Models
 from .models import Student, Exam, CheatingEvent, CheatingImage, CheatingAudio  # Importing custom models
@@ -33,11 +37,26 @@ import io  # Handling in-memory file operations
 from .ml_models.object_detection import detectObject  # Detecting objects in the exam environment
 from .ml_models.audio_detection import audio_detection  # Detecting external sounds for cheating detection
 from .ml_models.gaze_tracking import gaze_tracking # Tracking eye gaze to detect focus and distractions 
+from .ml_models.facial_detections import detectFace
 
 # from .ml_models.gaze_tracking import gaze_tracking  # Tracking eye gaze to detect focus and distractions
 
-# Fix: Import face_recognition (Previously missing)
-import face_recognition  # Used for facial recognition, comparing student faces with stored images
+from .ml_models.face_verification_mediapipe import (
+    extract_face_embedding_bgr,
+    match_face_embeddings,
+    FaceEmbeddingError,
+)
+
+# Backward-compatible wrappers used by existing registration/login flow
+def get_face_encoding(image_bgr):
+    return extract_face_embedding_bgr(image_bgr)
+
+
+def match_face_encodings(emb_a, emb_b, threshold=0.8):
+    return match_face_embeddings(emb_a, emb_b, threshold=threshold)
+
+
+
 
 # Fix: Proper datetime handling for Nepal Time Zone (Asia/Kathmandu)
 import pytz  # For timezone handling
@@ -53,6 +72,14 @@ def get_nepal_time():
     This ensures all timestamps are consistent with the local time.
     """
     return datetime.now(NEPAL_TZ)
+
+
+def get_questions_file_path():
+    """
+    Resolve the exam questions file path relative to the project root.
+    This avoids machine-specific absolute paths.
+    """
+    return Path(settings.BASE_DIR) / "proctoring" / "dummy_data" / "ai.json"
 
 
 # Home page view
@@ -88,11 +115,23 @@ def registration(request):
             nparr = np.frombuffer(img_data, np.uint8)  # Convert to numpy array
             image = cv2.imdecode(nparr, cv2.IMREAD_COLOR)  # Convert to OpenCV image
 
-            # Extract face encoding from the image
-            face_encoding = get_face_encoding(image)  # Function should return a list or None
-            if face_encoding is None:  # No face detected
-                messages.error(request, "No face detected. Please try again.")
-                return redirect('registration')
+            # Extract face embedding from the image
+            face_embedding = None
+            try:
+                face_embedding = get_face_embedding(image)
+            except FaceEmbeddingError:
+                # MediaPipe in this environment may not support face embedding.
+                face_embedding = None
+
+            # Allow registration even when face quality is low and embedding extraction fails.
+            if face_embedding is None:
+                messages.warning(
+                    request,
+                    "Face quality is low, but registration is allowed. Please use a clearer face photo later for better face login accuracy."
+                )
+
+
+
         except Exception as e:
             messages.error(request, f"Error processing image: {e}")
             return redirect('registration')
@@ -119,7 +158,8 @@ def registration(request):
                 address=address,
                 email=email,
                 photo=ContentFile(img_data, name=f"{name}_photo.jpg"),  # Save the uploaded image
-                face_encoding=face_encoding.tolist(),  # Convert NumPy array to list
+                face_encoding=face_embedding.tolist() if face_embedding is not None else None,  # Store embedding when available
+
             )
             student.save()
 
@@ -136,22 +176,21 @@ def registration(request):
     return render(request, 'registration.html')  # Render the registration page
 
 
-# Helper function to extract face encoding
-def get_face_encoding(image):
-    """
-    Extracts face encoding from an image using the face_recognition library.
-    - Detects faces in the image.
-    - Returns the encoding of the first face found.
-    - Returns None if no faces are detected.
-    """
-    face_locations = face_recognition.face_locations(image)  # Detect faces in the image
-    if not face_locations:
-        return None  # Return None if no faces are detected
-    return face_recognition.face_encodings(image, face_locations)[0]  # Return the first face encoding
+# Helper function to extract a lightweight face embedding using MediaPipe FaceMesh
+def get_face_embedding(image_bgr):
+    """Return a face embedding (np.ndarray) for a single detected face."""
+    return extract_face_embedding_bgr(image_bgr)
 
-# Helper function to match face encodings
-def match_face_encodings(captured_encoding, stored_encoding):
-    return face_recognition.compare_faces([stored_encoding], captured_encoding)[0]  # Compare encodings
+
+# Helper function to match face embeddings
+def match_face_embeddings_wrapper(captured_embedding, stored_embedding):
+    return match_face_embeddings(captured_embedding, stored_embedding, threshold=0.8)
+
+
+
+
+
+
 
 
 #Login View
@@ -175,19 +214,6 @@ def login(request):
             return JsonResponse({"success": False, "error": "Missing email, password, or captured photo."})
 
         try:
-            # Decode the base64 image (remove the "data:image/png;base64," prefix)
-            captured_photo_data = captured_photo_data.split(',')[1]
-            captured_photo = base64.b64decode(captured_photo_data)
-
-            # Convert the image to a NumPy array and decode it using OpenCV
-            nparr = np.frombuffer(captured_photo, np.uint8)
-            image = cv2.imdecode(nparr, cv2.IMREAD_COLOR)
-
-            # Extract face encoding from the captured image
-            captured_encoding = get_face_encoding(image)
-            if captured_encoding is None:
-                return JsonResponse({"success": False, "error": "No face detected in the captured photo."})
-
             # Authenticate the user using email and password
             user = authenticate(request, username=email, password=password)
             if user is None:
@@ -196,6 +222,37 @@ def login(request):
             try:
                 # Fetch the associated student record
                 student = user.student
+                if not student.face_encoding:
+                    # Fallback for users registered without a valid face embedding.
+                    auth_login(request, user)
+                    request.session['student_id'] = student.id
+                    request.session['student_name'] = student.name
+                    return JsonResponse({
+                        "success": True,
+                        "redirect_url": "/dashboard/",
+                        "student_name": student.name
+                    })
+
+                # Decode the base64 image (remove the "data:image/png;base64," prefix)
+                captured_photo_data = captured_photo_data.split(',')[1]
+                captured_photo = base64.b64decode(captured_photo_data)
+
+                # Convert the image to a NumPy array and decode it using OpenCV
+                nparr = np.frombuffer(captured_photo, np.uint8)
+                image = cv2.imdecode(nparr, cv2.IMREAD_COLOR)
+
+                # Extract face encoding from the captured image
+                try:
+                    captured_encoding = get_face_encoding(image)
+                except FaceEmbeddingError as face_err:
+                    return JsonResponse({
+                        "success": False,
+                        "error": f"Face recognition failed: {face_err}. Please capture a clearer front-facing photo."
+                    })
+
+                if captured_encoding is None:
+                    return JsonResponse({"success": False, "error": "No face detected in the captured photo."})
+
                 stored_encoding = np.array(student.face_encoding)
 
                 # Compare the captured face encoding with the stored encoding
@@ -228,15 +285,12 @@ def login(request):
 
 # Logout View 
 def logout_view(request):
-    """
-    Handles user logout.
-    - Clears all session data.
-    - Displays a success message.
-    - Redirects the user to the home page.
-    """
-    request.session.flush()  # Clear all session data
-    messages.success(request, "You have been logged out.")  # Display a success message
-    return redirect('home')  # Redirect to the home page
+    """Handles user logout."""
+    request.session.flush()
+    messages.success(request, "You have been logged out.")
+    return redirect('home')
+
+
 
 # Video feed generation for the webcam
 def gen_frames():
@@ -330,21 +384,35 @@ logger = logging.getLogger(__name__)
 
 # Global variables for warnings and background processes
 warning = None
+warning_updated_at = 0.0
+WARNING_DISPLAY_SECONDS = 8
+warning_lock = threading.Lock()
 last_audio_detected_time = time.time()
 stop_event = threading.Event()  # To stop background threads
+
+
+def set_warning(message):
+    """Store a warning with timestamp for short-term polling on exam page."""
+    global warning, warning_updated_at
+    with warning_lock:
+        warning = message
+        warning_updated_at = time.time()
+
 
 # Function to process each frame
 def process_frame(frame, request):
     """Process a single frame for cheating detection."""
-    global warning
     labels, processed_frame, person_count, detected_objects = detectObject(frame)
     cheating_event = None
+    active_warnings = []
 
     # Extract object names
     detected_labels = [label for label, _ in labels]
     # Check for cheating conditions
-    if any(label in ["cell phone", "book"] for label in detected_labels):
-        warning = f"ALERT: {', '.join(detected_labels)} detected!"  # Corrected formatting
+    suspicious_objects = [label for label in detected_labels if label in ["cell phone", "book"]]
+    if suspicious_objects:
+        unique_suspicious_objects = sorted(set(suspicious_objects))
+        active_warnings.append(f"ALERT: {', '.join(unique_suspicious_objects)} detected!")
         cheating_event, _ = CheatingEvent.objects.get_or_create(
             student=request.user.student,
             cheating_flag=True,
@@ -352,18 +420,42 @@ def process_frame(frame, request):
         )
         save_cheating_event(frame, request, cheating_event, detected_objects)
 
+    # Face-based checks (no-face / multiple-face).
+    # If MediaPipe face APIs are unavailable, detectFace returns 0 safely.
+    face_count = None
+    try:
+        face_count, _ = detectFace(frame)
+    except Exception:
+        face_count = None
+
     if person_count > 1:
-        warning = "ALERT: Multiple persons detected!"
+        active_warnings.append("ALERT: Multiple persons detected!")
         cheating_event, _ = CheatingEvent.objects.get_or_create(
             student=request.user.student,
             cheating_flag=True,
             event_type="multiple_persons"
         )
         save_cheating_event(frame, request, cheating_event, detected_objects)
+    elif face_count == 0:
+        active_warnings.append("ALERT: No face detected! Please stay in front of camera.")
+        cheating_event, _ = CheatingEvent.objects.get_or_create(
+            student=request.user.student,
+            cheating_flag=True,
+            event_type="no_face"
+        )
+        save_cheating_event(frame, request, cheating_event, detected_objects)
+    elif face_count is not None and face_count > 1:
+        active_warnings.append("ALERT: Multiple faces detected!")
+        cheating_event, _ = CheatingEvent.objects.get_or_create(
+            student=request.user.student,
+            cheating_flag=True,
+            event_type="multiple_faces"
+        )
+        save_cheating_event(frame, request, cheating_event, detected_objects)
 
     gaze = gaze_tracking(frame)
     if gaze["gaze"] != "center":
-        warning = "ALERT: Candidate not looking at the screen!"
+        active_warnings.append("ALERT: Candidate not looking at the screen!")
         cheating_event, _ = CheatingEvent.objects.get_or_create(
             student=request.user.student,
             cheating_flag=True,
@@ -371,15 +463,18 @@ def process_frame(frame, request):
         )
         save_cheating_event(frame, request, cheating_event, detected_objects)
 
+    if active_warnings:
+        set_warning(active_warnings[0])
+
 # Function to process audio
 def process_audio(request):
     """Continuously process audio for cheating detection."""
-    global last_audio_detected_time, warning
+    global last_audio_detected_time
 
     while not stop_event.is_set():  # Check if stop_event is triggered
         audio = audio_detection()
         if audio["audio_detected"]:
-            warning = "ALERT: Suspicious audio detected!"
+            set_warning("ALERT: Suspicious audio detected!")
             cheating_event, _ = CheatingEvent.objects.get_or_create(
                 student=request.user.student,
                 cheating_flag=True,
@@ -387,9 +482,6 @@ def process_audio(request):
             )
             save_cheating_event(None, request, cheating_event, audio_data=audio["audio_data"])
             last_audio_detected_time = time.time()
-
-        if time.time() - last_audio_detected_time > 5:
-            warning = None
 
         time.sleep(2)  # Avoid excessive CPU usage
 
@@ -501,7 +593,7 @@ def exam(request):
 
     # Load exam questions from the JSON file
     try:
-        with open("D://Futurproctor//futurproctor//proctoring//dummy_data//ai.json") as file:
+        with open(get_questions_file_path(), "r", encoding="utf-8") as file:
             data = json.load(file)
         questions = data.get("questions", [])
     except FileNotFoundError:
@@ -533,7 +625,7 @@ def submit_exam(request):
 
         # Load questions from ai.json
         try:
-            with open('D:\\Futurproctor\\futurproctor\\proctoring\\dummy_data\\ai.json', 'r') as file:
+            with open(get_questions_file_path(), "r", encoding="utf-8") as file:
                 data = json.load(file)
         except FileNotFoundError:
             return HttpResponse("Error: Questions file not found!", status=404)
@@ -668,7 +760,10 @@ from django.http import JsonResponse
 def get_warning(request):
     """Fetch real-time warnings for the exam page."""
     global warning
-    return JsonResponse({'warning': warning})
+    with warning_lock:
+        if warning and (time.time() - warning_updated_at) <= WARNING_DISPLAY_SECONDS:
+            return JsonResponse({'warning': warning})
+    return JsonResponse({'warning': None})
 
 # Streaming notifications to the proctor
 def proctor_notifications(request):
@@ -685,7 +780,10 @@ def proctor_notifications(request):
 
 ## Logout
 def logout(request):
+    # Preserve existing template-based logout.
+    request.session.flush()
     return render(request,'home.html')
+
 
 # ----------------------Admin Plus Report Page ---------------------------------------
 
@@ -790,8 +888,7 @@ def report_page(request, student_id):
 
 
 from django.template.loader import get_template
-from xhtml2pdf import pisa
-# (Ensure you import any helper functions you might have, e.g., get_detected_objects_string)
+
 
 def download_report(request, student_id):
     # Retrieve student and related data
@@ -843,8 +940,21 @@ def download_report(request, student_id):
     response = HttpResponse(content_type='application/pdf')
     response['Content-Disposition'] = f'attachment; filename="report_{student.id}.pdf"'
     
-    # Create PDF using xhtml2pdf (pisa)
-    pisa_status = pisa.CreatePDF(html, dest=response)
+    # Create PDF using xhtml2pdf (pisa) if available
+    try:
+        from xhtml2pdf import pisa
+    except Exception as e:
+        return HttpResponse(
+            "PDF support is unavailable (missing xhtml2pdf dependency).",
+            status=501,
+        )
+
+    try:
+        pisa_status = pisa.CreatePDF(html, dest=response)
+    except Exception:
+        return HttpResponse("PDF generation failed.", status=500)
+
+
     
     # Check for errors
     if pisa_status.err:

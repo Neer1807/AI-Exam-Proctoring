@@ -157,14 +157,17 @@
       fetch("/get_warning/")
         .then((response) => response.json())
         .then((data) => {
+          const warningAlert = document.getElementById("warning-alert");
           if (data.warning) {
-            const warningAlert = document.getElementById("warning-alert");
             warningAlert.textContent = data.warning;
             warningAlert.style.display = "block";
+          } else {
+            warningAlert.style.display = "none";
           }
         });
     }
-    setInterval(checkWarnings, 5000);
+    checkWarnings();
+    setInterval(checkWarnings, 2000);
 
     // Prevent right-click
     document.addEventListener("contextmenu", (e) => e.preventDefault());

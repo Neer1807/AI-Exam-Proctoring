@@ -2,20 +2,33 @@ import cv2
 import mediapipe as mp
 import numpy as np
 
-# Initialize MediaPipe Face Detection and Face Mesh
-mp_face_detection = mp.solutions.face_detection
-mp_drawing = mp.solutions.drawing_utils
-mp_face_mesh = mp.solutions.face_mesh
+# MediaPipe in this environment appears to ship only `mediapipe.tasks`.
+# Guard MediaPipe Face APIs so imports don’t fail at runtime.
+mp_face_detection = None
+mp_drawing = None
+mp_face_mesh = None
+face_detection = None
+face_mesh = None
 
-# Initialize face detection and face mesh models
-face_detection = mp_face_detection.FaceDetection(model_selection=0, min_detection_confidence=0.5)
-face_mesh = mp_face_mesh.FaceMesh(static_image_mode=False, max_num_faces=1, refine_landmarks=True, min_detection_confidence=0.5)
+if hasattr(mp, 'solutions'):
+    mp_face_detection = mp.solutions.face_detection
+    mp_drawing = mp.solutions.drawing_utils
+    mp_face_mesh = mp.solutions.face_mesh
+
+    # Initialize face detection and face mesh models
+    face_detection = mp_face_detection.FaceDetection(model_selection=0, min_detection_confidence=0.5)
+    face_mesh = mp_face_mesh.FaceMesh(static_image_mode=False, max_num_faces=1, refine_landmarks=True, min_detection_confidence=0.5)
+
 
 def detectFace(frame):
     """
     Detects faces, landmarks, and alerts on suspicious activities (e.g., multiple faces or suspicious gaze).
     Returns: faceCount, annotated frame
     """
+    # If MediaPipe face APIs are not available, fail safe.
+    if face_detection is None or face_mesh is None or mp_drawing is None or mp_face_mesh is None:
+        return 0, frame
+
     # Convert the frame to RGB as required by MediaPipe
     rgb_frame = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
     faceCount = 0
@@ -30,6 +43,7 @@ def detectFace(frame):
         # Draw bounding boxes and landmarks
         for detection in detection_results.detections:
             mp_drawing.draw_detection(annotated_frame, detection)
+
 
     # Alert for multiple faces
     if faceCount > 1:
