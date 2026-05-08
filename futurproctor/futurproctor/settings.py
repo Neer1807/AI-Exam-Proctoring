@@ -5,6 +5,7 @@ Django settings for futurproctor project.
 from pathlib import Path
 import os
 import dj_database_url
+from urllib.parse import urlparse
 
 
 # Build paths inside the project like this: BASE_DIR / 'subdir'.
@@ -38,7 +39,18 @@ INSTALLED_APPS = [
     "proctoring",
 ]
 
-USE_CLOUDINARY = bool(os.getenv("CLOUDINARY_URL")) or env_bool("USE_CLOUDINARY", False)
+def is_valid_cloudinary_url(value: str | None) -> bool:
+    if not value:
+        return False
+    try:
+        parsed = urlparse(value)
+    except Exception:
+        return False
+    return parsed.scheme == "cloudinary" and bool(parsed.netloc)
+
+
+_cloudinary_url = os.getenv("CLOUDINARY_URL")
+USE_CLOUDINARY = is_valid_cloudinary_url(_cloudinary_url) or env_bool("USE_CLOUDINARY", False)
 if USE_CLOUDINARY:
     INSTALLED_APPS += [
         "cloudinary_storage",

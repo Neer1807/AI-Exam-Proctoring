@@ -45,8 +45,8 @@
             <h5 class="mb-3">Face Recognition</h5>
 
             <div class="position-relative d-flex justify-content-center">
-              <img id="webcam-stream" src="{% url 'video_feed' %}" alt="Video Feed" class="img-fluid rounded shadow"
-                class="img-fluid rounded shadow fp-webcam-stream" />
+              <video id="webcam-stream" class="img-fluid rounded shadow fp-webcam-stream" autoplay playsinline
+                muted></video>
               <canvas id="canvas" class="d-none"></canvas>
             </div>
 
@@ -85,10 +85,35 @@
   const csrfToken = document.querySelector('[name=csrfmiddlewaretoken]').value;
 
   let photoCaptured = false;
+  let mediaStream = null;
+
+  async function startWebcam() {
+    if (!navigator.mediaDevices || !navigator.mediaDevices.getUserMedia) {
+      errorMessage.textContent = 'Camera API is not supported in this browser.';
+      errorMessage.classList.remove('d-none');
+      return;
+    }
+
+    try {
+      mediaStream = await navigator.mediaDevices.getUserMedia({
+        video: { facingMode: 'user' },
+        audio: false
+      });
+      webcamStream.srcObject = mediaStream;
+      errorMessage.classList.add('d-none');
+    } catch (err) {
+      errorMessage.textContent = 'Unable to access camera. Please allow camera permission and reload.';
+      errorMessage.classList.remove('d-none');
+    }
+  }
+
+  startWebcam();
 
   takePhotoBtn.addEventListener('click', () => {
-    canvas.width = webcamStream.width;
-    canvas.height = webcamStream.height;
+    const videoWidth = webcamStream.videoWidth || webcamStream.clientWidth || 640;
+    const videoHeight = webcamStream.videoHeight || webcamStream.clientHeight || 480;
+    canvas.width = videoWidth;
+    canvas.height = videoHeight;
 
     const context = canvas.getContext('2d');
     context.drawImage(webcamStream, 0, 0, canvas.width, canvas.height);
@@ -134,6 +159,12 @@
           errorMessage.textContent = 'An error occurred during login.';
           errorMessage.classList.remove('d-none');
         });
+    }
+  });
+
+  window.addEventListener('beforeunload', () => {
+    if (mediaStream) {
+      mediaStream.getTracks().forEach(track => track.stop());
     }
   });
 </script>
