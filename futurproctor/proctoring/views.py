@@ -75,9 +75,6 @@ def get_nepal_time():
     return datetime.now(NEPAL_TZ)
 
 
-FACE_MATCH_THRESHOLD = float(os.getenv("FACE_MATCH_THRESHOLD", "2.2"))
-
-
 def get_student_photo_embedding(student):
     """Extract embedding from saved student photo (works with Cloudinary storage too)."""
     if not student.photo:
@@ -291,14 +288,14 @@ def login(request):
                 match_result = {
                     "match": False,
                     "distance": None,
-                    "threshold": FACE_MATCH_THRESHOLD,
+                    "threshold": None,
                     "match_percentage": 0.0,
                 }
                 if stored_encoding is not None:
                     match_result = compare_face_embeddings(
                         captured_encoding,
                         stored_encoding,
-                        threshold=FACE_MATCH_THRESHOLD,
+                        threshold=None,
                     )
 
                 # Legacy recovery: if stored encoding shape/type does not match, rebuild from profile photo.
@@ -310,7 +307,7 @@ def login(request):
                         match_result = compare_face_embeddings(
                             captured_encoding,
                             rebuilt_encoding,
-                            threshold=FACE_MATCH_THRESHOLD,
+                            threshold=None,
                         )
 
                 # If no face reference can be compared, allow password-only login (soft fail-safe).

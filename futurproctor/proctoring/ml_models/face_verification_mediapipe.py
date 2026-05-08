@@ -1,5 +1,6 @@
 import cv2
 import numpy as np
+import os
 
 try:
     import mediapipe as mp
@@ -149,14 +150,24 @@ def extract_face_embedding_bgr(frame_bgr):
     return emb.astype(np.float32)
 
 
+def _env_float(name, default):
+    raw = os.getenv(name)
+    if raw is None:
+        return float(default)
+    try:
+        return float(raw)
+    except Exception:
+        return float(default)
+
+
 def get_effective_threshold(embedding, threshold=None):
     """Return an embedding-aware threshold, optionally overridden."""
     if threshold is not None:
         return float(threshold)
     emb = np.asarray(embedding, dtype=np.float32).flatten()
     if emb.shape[0] == 64 * 64:
-        return 10.5
-    return 2.2
+        return _env_float("FACE_MATCH_THRESHOLD_OPENCV", 10.5)
+    return _env_float("FACE_MATCH_THRESHOLD_MEDIAPIPE", 2.2)
 
 
 def compare_face_embeddings(embedding_a, embedding_b, threshold=None):
@@ -175,7 +186,9 @@ def compare_face_embeddings(embedding_a, embedding_b, threshold=None):
     effective_threshold = get_effective_threshold(a, threshold=threshold)
     dist = float(np.linalg.norm(a - b))
     closeness = max(0.0, 1.0 - (dist / max(effective_threshold, 1e-6)))
-    match_percentage = round(closeness * 100.0, 2)
+    # Keep a more informative score for debugging instead of hard 0 at first miss.
+    soft_similarity = np.exp(-dist / max(effective_threshold, 1e-6))
+    match_percentage = round(max(closeness, soft_similarity) * 100.0, 2)
     return {
         "match": dist <= effective_threshold,
         "distance": dist,
