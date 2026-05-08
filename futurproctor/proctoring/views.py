@@ -44,6 +44,7 @@ from .ml_models.facial_detections import detectFace
 from .ml_models.face_verification_mediapipe import (
     extract_face_embedding_bgr,
     match_face_embeddings,
+    compare_face_embeddings,
     FaceEmbeddingError,
 )
 
@@ -52,7 +53,7 @@ def get_face_encoding(image_bgr):
     return extract_face_embedding_bgr(image_bgr)
 
 
-def match_face_encodings(emb_a, emb_b, threshold=0.8):
+def match_face_encodings(emb_a, emb_b, threshold=None):
     return match_face_embeddings(emb_a, emb_b, threshold=threshold)
 
 
@@ -72,6 +73,9 @@ def get_nepal_time():
     This ensures all timestamps are consistent with the local time.
     """
     return datetime.now(NEPAL_TZ)
+
+
+FACE_MATCH_THRESHOLD = float(os.getenv("FACE_MATCH_THRESHOLD", "1.15"))
 
 
 def get_questions_file_path():
@@ -256,7 +260,12 @@ def login(request):
                 stored_encoding = np.array(student.face_encoding)
 
                 # Compare the captured face encoding with the stored encoding
-                if match_face_encodings(captured_encoding, stored_encoding):
+                match_result = compare_face_embeddings(
+                    captured_encoding,
+                    stored_encoding,
+                    threshold=FACE_MATCH_THRESHOLD,
+                )
+                if match_result["match"]:
                     # Log the user in
                     auth_login(request, user)
 
@@ -268,10 +277,15 @@ def login(request):
                     return JsonResponse({
                         "success": True,
                         "redirect_url": "/dashboard/",
-                        "student_name": student.name
+                        "student_name": student.name,
+                        "match_percentage": match_result["match_percentage"],
                     })
                 else:
-                    return JsonResponse({"success": False, "error": "Face does not match our records."})
+                    return JsonResponse({
+                        "success": False,
+                        "error": f"Face does not match our records. Match: {match_result['match_percentage']}%",
+                        "match_percentage": match_result["match_percentage"],
+                    })
 
             except Student.DoesNotExist:
                 return JsonResponse({"success": False, "error": "No student record associated with this account."})
@@ -466,6 +480,20 @@ def process_frame(frame, request):
     if active_warnings:
         set_warning(active_warnings[0])
 
+
+def decode_base64_image_to_frame(image_data):
+    """Decode a browser-captured base64 image into OpenCV BGR frame."""
+    if not image_data:
+        return None
+    try:
+        if "," in image_data:
+            image_data = image_data.split(",", 1)[1]
+        payload = base64.b64decode(image_data)
+        nparr = np.frombuffer(payload, np.uint8)
+        return cv2.imdecode(nparr, cv2.IMREAD_COLOR)
+    except Exception:
+        return None
+
 # Function to process audio
 def process_audio(request):
     """Continuously process audio for cheating detection."""
@@ -601,11 +629,10 @@ def exam(request):
     except json.JSONDecodeError:
         return HttpResponse("Error: Failed to parse the questions file!", status=400)
 
-    # Start background processing threads for video and audio monitoring
+    # Browser camera frames are processed through an API endpoint.
+    # Server-side webcam/audio capture is disabled for cloud deployments.
     global stop_event
-    stop_event.clear()  # Reset the stop event flag
-    threading.Thread(target=background_processing, args=(request,), daemon=True).start()
-    threading.Thread(target=process_audio, args=(request,), daemon=True).start()
+    stop_event.clear()
 
     # Render the exam template with questions and tab count
     return render(request, 'exam.html', {
@@ -613,6 +640,26 @@ def exam(request):
         'warning': warning,
         'tab_count': tab_count,
     })
+
+
+@csrf_exempt
+@login_required
+def process_exam_frame(request):
+    """Process a browser webcam snapshot and run cheating checks server-side."""
+    if request.method != "POST":
+        return JsonResponse({"success": False, "error": "Invalid request method."}, status=405)
+
+    image_data = request.POST.get("frame")
+    frame = decode_base64_image_to_frame(image_data)
+    if frame is None:
+        return JsonResponse({"success": False, "error": "Invalid frame payload."}, status=400)
+
+    try:
+        process_frame(frame, request)
+        return JsonResponse({"success": True})
+    except Exception as exc:
+        logger.error(f"Frame processing failed: {exc}")
+        return JsonResponse({"success": False, "error": "Frame processing failed."}, status=500)
 
 # Submit exam
 @login_required

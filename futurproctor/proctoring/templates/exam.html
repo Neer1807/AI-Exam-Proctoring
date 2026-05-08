@@ -70,6 +70,14 @@
         <div id="timer" class="timer text-center mb-3">
           Time Left: <span id="time"></span>
         </div>
+        <div class="card mb-4">
+          <div class="card-body text-center">
+            <h5 class="card-title">Live Proctoring Camera</h5>
+            <video id="exam-webcam" class="img-fluid rounded border" autoplay playsinline muted style="max-height:240px;"></video>
+            <canvas id="exam-frame-canvas" class="d-none"></canvas>
+            <div id="camera-status" class="small mt-2 text-muted">Initializing camera...</div>
+          </div>
+        </div>
 
         <!-- Questions -->
         <form id="exam-form" method="post" action="{% url 'submit_exam' %}">
@@ -120,6 +128,12 @@
 
 
   <script>
+    const csrfToken = document.querySelector('[name=csrfmiddlewaretoken]').value;
+    const examWebcam = document.getElementById("exam-webcam");
+    const examCanvas = document.getElementById("exam-frame-canvas");
+    const cameraStatus = document.getElementById("camera-status");
+    let examMediaStream = null;
+
     // Timer Logic
     let totalTime = 5 * 60; // 5 minutes in seconds
     const timerElement = document.getElementById("time");
@@ -128,9 +142,7 @@
       const timer = setInterval(() => {
         const minutes = Math.floor(totalTime / 60);
         const seconds = totalTime % 60;
-        timerElement.textContent = `${minutes}:${
-          seconds < 10 ? "0" : ""
-        }${seconds}`;
+        timerElement.textContent = `${minutes}:${seconds < 10 ? "0" : ""}${seconds}`;
 
         if (totalTime === 0) {
           clearInterval(timer);
@@ -140,7 +152,47 @@
         totalTime--;
       }, 1000);
     }
-    window.onload = startTimer;
+
+    async function startExamCamera() {
+      if (!navigator.mediaDevices || !navigator.mediaDevices.getUserMedia) {
+        cameraStatus.textContent = "Camera API not supported in this browser.";
+        return;
+      }
+      try {
+        examMediaStream = await navigator.mediaDevices.getUserMedia({
+          video: { facingMode: "user" },
+          audio: false,
+        });
+        examWebcam.srcObject = examMediaStream;
+        cameraStatus.textContent = "Camera connected. Proctoring active.";
+      } catch (error) {
+        cameraStatus.textContent = "Camera access denied. Allow camera and refresh.";
+      }
+    }
+
+    function sendExamFrame() {
+      if (!examMediaStream || !examWebcam.videoWidth || !examWebcam.videoHeight) {
+        return;
+      }
+      examCanvas.width = examWebcam.videoWidth;
+      examCanvas.height = examWebcam.videoHeight;
+      const context = examCanvas.getContext("2d");
+      context.drawImage(examWebcam, 0, 0, examCanvas.width, examCanvas.height);
+      const frameData = examCanvas.toDataURL("image/jpeg", 0.7);
+
+      const formData = new FormData();
+      formData.append("frame", frameData);
+      fetch("{% url 'process_exam_frame' %}", {
+        method: "POST",
+        headers: { "X-CSRFToken": csrfToken },
+        body: formData,
+      }).catch(() => {});
+    }
+
+    window.onload = () => {
+      startTimer();
+      startExamCamera();
+    };
 
     // Function to handle option selection
     function selectOption(optionTile, inputId) {
@@ -168,6 +220,7 @@
     }
     checkWarnings();
     setInterval(checkWarnings, 2000);
+    setInterval(sendExamFrame, 3000);
 
     // Prevent right-click
     document.addEventListener("contextmenu", (e) => e.preventDefault());
@@ -182,66 +235,56 @@
     document.addEventListener("fullscreenchange", () => {
       if (!document.fullscreenElement) {
         alert("You cannot exit fullscreen mode during the exam!");
-        document.documentElement.requestFullscreen();
+        if (document.documentElement.requestFullscreen) {
+          document.documentElement.requestFullscreen().catch(() => {});
+        }
       }
     });
 
-    
-      // Enter fullscreen mode
-      document.documentElement.requestFullscreen();
-    
-      // Initialize the tab switch count (defaulting to 0 if not provided)
-      let tabSwitchCount = {{ tab_count|default:0 }};
-      
-      // Keep track of the previous visibility state
-      let lastVisibilityState = document.visibilityState;
-    
-      // Define the tab switch handler
-      function tabSwitchHandler() {
-        // Only count a switch if the page goes from 'visible' to 'hidden'
-        if (lastVisibilityState === 'visible' && document.visibilityState === 'hidden') {
-          tabSwitchCount++;
-          document.getElementById("tab-count").textContent = tabSwitchCount;
-    
-          // Send a POST request to record the tab switch
-          fetch("{% url 'record_tab_switch' %}", {
-            method: "POST",
-            headers: { "X-CSRFToken": "{{ csrf_token }}" },
-          })
+    if (document.documentElement.requestFullscreen) {
+      document.documentElement.requestFullscreen().catch(() => {});
+    }
+
+    // Initialize the tab switch count (defaulting to 0 if not provided)
+    let tabSwitchCount = {{ tab_count|default:0 }};
+    let lastVisibilityState = document.visibilityState;
+
+    function tabSwitchHandler() {
+      if (lastVisibilityState === 'visible' && document.visibilityState === 'hidden') {
+        tabSwitchCount++;
+        document.getElementById("tab-count").textContent = tabSwitchCount;
+        fetch("{% url 'record_tab_switch' %}", {
+          method: "POST",
+          headers: { "X-CSRFToken": csrfToken },
+        })
           .then(response => response.json())
           .then(data => {
-             // If termination condition is met, alert and redirect (or submit termination logic)
-             if (data.status === "terminated") {
-               alert(data.message);
-               // Redirect to a termination page or home (ensure you have this URL configured)
-               window.location.href = "{% url 'exam_submission_success' %}";
-             } else {
-               // Optionally alert on each tab switch when exam is ongoing
-               if (tabSwitchCount >= 1) {
-                 alert("Warning: Tab switch detected! Total switches: " + tabSwitchCount);
-               }
-             }
+            if (data.status === "terminated") {
+              alert(data.message);
+              window.location.href = "{% url 'exam_submission_success' %}";
+            } else if (tabSwitchCount >= 1) {
+              alert("Warning: Tab switch detected! Total switches: " + tabSwitchCount);
+            }
           })
           .catch(error => console.error('Error:', error));
-        }
-        // Update the last known visibility state
-        lastVisibilityState = document.visibilityState;
       }
-    
-      // Listen for visibility changes
-      document.addEventListener("visibilitychange", tabSwitchHandler);
-    
-      // Prevent accidental closing or refreshing of the exam page
-      window.onbeforeunload = function () {
-        return "You are in the middle of an exam! Are you sure you want to leave?";
-      };
-    
-      // When the exam is submitted, remove the event listener and onbeforeunload warning
-      document.getElementById("exam-form").addEventListener("submit", function () {
-        window.onbeforeunload = null;
-        document.removeEventListener("visibilitychange", tabSwitchHandler);
-      });
-    </script>
+      lastVisibilityState = document.visibilityState;
+    }
+
+    document.addEventListener("visibilitychange", tabSwitchHandler);
+
+    window.onbeforeunload = function () {
+      return "You are in the middle of an exam! Are you sure you want to leave?";
+    };
+
+    document.getElementById("exam-form").addEventListener("submit", function () {
+      window.onbeforeunload = null;
+      document.removeEventListener("visibilitychange", tabSwitchHandler);
+      if (examMediaStream) {
+        examMediaStream.getTracks().forEach(track => track.stop());
+      }
+    });
+  </script>
     
 </body>
 </html>

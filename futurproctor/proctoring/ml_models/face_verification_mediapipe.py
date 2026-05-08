@@ -149,20 +149,42 @@ def extract_face_embedding_bgr(frame_bgr):
     return emb.astype(np.float32)
 
 
-def match_face_embeddings(embedding_a, embedding_b, threshold=0.8):
-    """Return True if embeddings match within threshold."""
+def get_effective_threshold(embedding, threshold=None):
+    """Return an embedding-aware threshold, optionally overridden."""
+    if threshold is not None:
+        return float(threshold)
+    emb = np.asarray(embedding, dtype=np.float32).flatten()
+    if emb.shape[0] == 64 * 64:
+        return 10.5
+    return 1.15
+
+
+def compare_face_embeddings(embedding_a, embedding_b, threshold=None):
+    """Return comparison details including distance and match percentage."""
     a = np.asarray(embedding_a, dtype=np.float32).flatten()
     b = np.asarray(embedding_b, dtype=np.float32).flatten()
 
     if a.shape != b.shape:
-        return False
+        return {
+            "match": False,
+            "distance": None,
+            "threshold": None,
+            "match_percentage": 0.0,
+        }
 
-    # Threshold tuning by embedding type:
-    # - MediaPipe landmark embeddings are distance-comparable around 0.8
-    # - OpenCV fallback embeddings use normalized pixel vectors and need a larger threshold
-    if a.shape[0] == 64 * 64:
-        threshold = 8.5
-
+    effective_threshold = get_effective_threshold(a, threshold=threshold)
     dist = float(np.linalg.norm(a - b))
-    return dist <= threshold
+    closeness = max(0.0, 1.0 - (dist / max(effective_threshold, 1e-6)))
+    match_percentage = round(closeness * 100.0, 2)
+    return {
+        "match": dist <= effective_threshold,
+        "distance": dist,
+        "threshold": effective_threshold,
+        "match_percentage": match_percentage,
+    }
+
+
+def match_face_embeddings(embedding_a, embedding_b, threshold=None):
+    """Return True if embeddings match within effective threshold."""
+    return compare_face_embeddings(embedding_a, embedding_b, threshold=threshold)["match"]
 

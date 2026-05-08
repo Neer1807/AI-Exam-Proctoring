@@ -19,6 +19,7 @@
             <li>Click <strong>Login</strong> to authenticate.</li>
           </ul>
         </div>
+        <div id="match-info" class="alert alert-info d-none"></div>
 
         <div class="row g-4">
           <div class="col-md-6">
@@ -148,11 +149,17 @@
         .then(response => response.json())
         .then(data => {
           if (data.success) {
-            alert('Welcome, ' + data.student_name);
+            const pct = (data.match_percentage ?? 0).toFixed(2);
+            alert('Welcome, ' + data.student_name + '. Face match: ' + pct + '%');
             window.location.href = data.redirect_url;
           } else {
             errorMessage.textContent = data.error;
             errorMessage.classList.remove('d-none');
+            if (typeof data.match_percentage === 'number') {
+              const info = document.getElementById('match-info');
+              info.textContent = 'Face match score: ' + data.match_percentage.toFixed(2) + '%';
+              info.classList.remove('d-none');
+            }
           }
         })
         .catch(() => {
